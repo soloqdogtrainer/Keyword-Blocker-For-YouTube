@@ -1,0 +1,387 @@
+popup.js
+
+// Function to update the badge text with the count of keywords
+function updateBadgeText(count) {
+  chrome.action.setBadgeText({ text: count.toString() });
+}
+
+// Update the badge text initially when the popup is opened
+chrome.storage.sync.get("keywords", ({ keywords }) => {
+  const keywordCount = keywords ? keywords.length : 0;
+  updateBadgeText(keywordCount);
+});
+
+// Listen for changes in the keywords and update the badge text
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "sync" && changes.keywords) {
+    const keywordCount = changes.keywords.newValue ? changes.keywords.newValue.length : 0;
+    updateBadgeText(keywordCount);
+  }
+});
+
+document.getElementById("add-button").addEventListener("click", addKeyword);
+document.getElementById("keyword-input").addEventListener("keypress", function(event) {
+  if (event.key === 'Enter') {
+    debounce(addKeyword, 300)();
+  }
+});
+
+chrome.storage.sync.get("keywords", ({ keywords }) => {
+  if (keywords && keywords.length > 0) {
+    keywords.forEach(keyword => {
+      const keywordItem = createKeywordItem(keyword);
+      document.getElementById("keywords-list").appendChild(keywordItem);
+    });
+  }
+});
+
+// Debounced addKeyword function
+const debouncedAddKeyword = debounce(addKeyword, 300);
+
+function addKeyword() {
+  const keywordInput = document.getElementById("keyword-input");
+  const keywordText = keywordInput.value.trim().toLowerCase();
+  const feedbackElement = document.getElementById("feedback");
+
+  feedbackElement.textContent = ''; // Clear feedback message
+
+  if (!keywordText) {
+    return;
+  }
+
+  chrome.storage.sync.get("keywords", ({ keywords = [] }) => {
+    if (keywords.includes(keywordText)) {
+      showFeedback("Keyword already exists", "error");
+    } else {
+      keywords.push(keywordText);
+      chrome.storage.sync.set({ keywords }, () => {
+        const keywordItem = createKeywordItem(keywordText);
+        document.getElementById("keywords-list").appendChild(keywordItem);
+        keywordInput.value = "";
+        showFeedback("Keyword added", "success");
+      });
+    }
+  });
+}
+
+function createKeywordItem(keywordText) {
+  const keywordItem = document.createElement("div");
+  keywordItem.classList.add("keyword-item");
+
+  const deleteButton = document.createElement("button");
+  deleteButton.textContent = "X";
+  deleteButton.classList.add("delete-button");
+  deleteButton.addEventListener("click", () => removeKeyword(keywordText, keywordItem));
+  keywordItem.appendChild(deleteButton);
+
+  const keywordTextElement = document.createElement("span");
+  keywordTextElement.classList.add("keyword-text");
+  keywordTextElement.textContent = keywordText;
+  keywordItem.appendChild(keywordTextElement);
+
+  return keywordItem;
+}
+
+function removeKeyword(keywordText, keywordItem) {
+  chrome.storage.sync.get("keywords", ({ keywords = [] }) => {
+    const updatedKeywords = keywords.filter(item => item !== keywordText);
+    chrome.storage.sync.set({ keywords: updatedKeywords }, () => {
+      keywordItem.classList.add("fade-out");
+      setTimeout(() => {
+        keywordItem.remove();
+        showFeedback("Keyword removed", "success");
+      }, 300); // Match the duration of the fade-out animation
+    });
+  });
+}
+
+function showFeedback(message, type) {
+  const feedbackElement = document.getElementById("feedback");
+  feedbackElement.textContent = message;
+  feedbackElement.className = `feedback ${type}`;
+  setTimeout(() => {
+    feedbackElement.textContent = '';
+    feedbackElement.className = 'feedback';
+  }, 3000);
+}
+
+// Define a debounce function
+function debounce(func, delay) {
+  let timeoutId;
+  return function(...args) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      func.apply(this, args);
+    }, delay);
+  };
+}
+
+popup.html
+
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="input-container">
+    <input type="text" id="keyword-input" placeholder="Add keyword" autofocus />
+    <button id="add-button">Add</button>
+  </div>
+  <div id="feedback"></div>
+  <div id="keywords-list"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
+
+background.js
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+  const tabId = activeInfo.tabId;
+  chrome.tabs.get(tabId, (tab) => {
+    if (tab.url?.startsWith("https://www.youtube.com/feed/subscriptions")) {
+      chrome.scripting.executeScript({
+        target: { tabId: tabId, allFrames: true },
+        files: ['content.js']
+      });
+    }
+  });
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "complete" && tab.url?.startsWith("https://www.youtube.com/feed/subscriptions")) {
+    chrome.scripting.executeScript({
+      target: { tabId: tabId, allFrames: true },
+      files: ['content.js']
+    });
+  }
+});
+
+content.js
+
+// Ensure keywords are declared only once
+if (typeof keywords === 'undefined') {
+  var keywords = [];
+}
+
+// Fetch initial keywords and hide videos
+chrome.storage.sync.get({ keywords: [] }, (data) => {
+  keywords = data.keywords;
+  hideVideos();
+});
+
+// Listen for storage changes and update keywords
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'sync' && changes.keywords) {
+    keywords = changes.keywords.newValue || [];
+    hideVideos();
+  }
+});
+
+// Function to hide videos
+function hideVideos() {
+  const videoElements = document.querySelectorAll("ytd-rich-item-renderer");
+
+  videoElements.forEach((videoElement) => {
+    const titleElement = videoElement.querySelector("#video-title");
+    if (titleElement) {
+      const videoTitle = titleElement.textContent.trim().toLowerCase();
+      if (containsAnyKeyword(videoTitle, keywords)) {
+        videoElement.style.display = "none";
+      } else {
+        videoElement.style.display = ""; // Ensure videos that don't match are shown
+      }
+    }
+  });
+}
+
+// Function to check if a string contains any of the keywords
+function containsAnyKeyword(str, keywords) {
+  return keywords.some((keyword) => str.includes(keyword));
+}
+
+// Observe for new video additions
+if (typeof observer === 'undefined') {
+  const observer = new MutationObserver((mutations) => {
+    let shouldHideVideos = false;
+
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (node.nodeType === Node.ELEMENT_NODE && node.matches("ytd-rich-item-renderer")) {
+          const titleElement = node.querySelector("#video-title");
+          if (titleElement) {
+            const videoTitle = titleElement.textContent.trim().toLowerCase();
+            if (containsAnyKeyword(videoTitle, keywords)) {
+              node.style.display = "none";
+              shouldHideVideos = true;
+            }
+          }
+        }
+      });
+    });
+
+    if (shouldHideVideos) {
+      hideVideos();
+    }
+  });
+
+  const grid = document.querySelector('ytd-rich-grid-renderer');
+  if (grid) {
+    observer.observe(grid, { childList: true, subtree: true });
+  }
+}
+
+manifest.json
+
+{
+  "manifest_version": 3,
+  "name": "Keyword Blocker for YouTube",
+  "description": "This Chrome extension allows you to hide videos from your YouTube subscriptions feed based on keywords.",
+  "version": "1.0",
+  "permissions": ["activeTab", "storage", "scripting", "tabs"],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}
+
+styles.css
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f4f4f9;
+  border-radius: 12px;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+#input-container {
+  display: flex;
+  margin: 10px;
+  padding: 10px;
+  background-color: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+#keyword-input {
+  flex: 1;
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  font-size: 16px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+#add-button {
+  padding: 10px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  margin-left: 10px;
+  font-size: 16px;
+  transition: background-color 0.3s ease, transform 0.3s ease;
+}
+
+#add-button:hover {
+  background-color: #0056b3;
+  transform: scale(1.05);
+}
+
+#feedback {
+  margin: 10px;
+  font-weight: bold;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+#feedback.success {
+  color: green;
+  opacity: 1;
+}
+
+#feedback.error {
+  color: red;
+  opacity: 1;
+}
+
+#keywords-list {
+  margin: 20px;
+  padding: 0;
+}
+
+.keyword-item {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  background-color: #fff;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  margin-bottom: 5px;
+  opacity: 1;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.keyword-item:hover {
+  background-color: #f0f0f0;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.keyword-text {
+  flex: 1;
+  margin-left: 10px;
+  font-weight: bold;
+  color: #333;
+}
+
+.delete-button {
+  background-color: transparent;
+  border: none;
+  color: #888;
+  cursor: pointer;
+  font-size: 1.2em;
+  border-radius: 50%;
+  transition: color 0.3s ease, transform 0.3s ease;
+}
+
+.delete-button:hover {
+  color: red;
+  transform: scale(1.2);
+}
+
+.keyword-item.fade-in {
+  animation: fadeIn 0.5s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
